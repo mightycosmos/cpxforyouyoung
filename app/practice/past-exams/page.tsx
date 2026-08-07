@@ -28,6 +28,7 @@ function PastExamsContent() {
 
   // Selected Exam for Practice Setup
   const [selectedExam, setSelectedExam] = useState<PastExam | null>(null);
+  const [isRandomMode, setIsRandomMode] = useState(false);
 
   // Practice Configs
   const [difficulty, setDifficulty] = useState<Difficulty>('normal');
@@ -386,7 +387,7 @@ function PastExamsContent() {
         payload.patientEducation = patientEducation.trim();
       }
 
-      const isEditing = !!viewingExam && !viewingExam.isPreMade;
+      const isEditing = !!viewingExam;
       const targetId = isEditing ? viewingExam.id : crypto.randomUUID();
 
       let caseSpec: CaseSpec;
@@ -564,18 +565,27 @@ function PastExamsContent() {
 
   const handleDeleteExam = async () => {
     if (!viewingExam) return;
-    if (viewingExam.isPreMade) {
+
+    // Check if this case was edited by the user (exists in userPastExams)
+    const isUserEdited = (useSessionStore.getState().userPastExams ?? []).some((e) => e.id === viewingExam.id);
+
+    if (viewingExam.isPreMade && !isUserEdited) {
       alert('기본 탑재 기출은 삭제할 수 없습니다.');
       return;
     }
-    if (!confirm('정말로 이 기출을 삭제하시겠습니까?')) {
+
+    const confirmMessage = isUserEdited && viewingExam.isPreMade
+      ? '이 기출의 수정한 내용을 삭제하고 원래 기본 탑재 기출로 복원하시겠습니까?'
+      : '정말로 이 기출을 삭제하시겠습니까?';
+
+    if (!confirm(confirmMessage)) {
       return;
     }
     
     setSubmitting(true);
     try {
       await removeUserPastExam(viewingExam.id);
-      alert('성공적으로 삭제되었습니다.');
+      alert(isUserEdited && viewingExam.isPreMade ? '수정 내용이 삭제되어 기본 기출로 복원되었습니다.' : '성공적으로 삭제되었습니다.');
       setViewingExam(null);
       setRegisterOpen(false);
       await loadExams();
@@ -628,7 +638,7 @@ function PastExamsContent() {
     await handleStartExam(randomPicked);
   };
 
-  const isReadOnly = !!viewingExam && !!viewingExam.isPreMade;
+  const isReadOnly = false;
 
   if (!authLoading && !user) return null;
 
@@ -1285,6 +1295,7 @@ function PastExamsContent() {
                       key={exam.id}
                       onClick={() => {
                         setSelectedExam(exam);
+                        setIsRandomMode(false);
                         loadExamIntoForm(exam);
                       }}
                       className={`group relative border rounded-3xl overflow-hidden cursor-pointer transition-all duration-300 p-5 flex flex-col justify-between bg-white/40 backdrop-blur-md hover:bg-white/80 hover:-translate-y-1 hover:shadow-lg
@@ -1344,33 +1355,49 @@ function PastExamsContent() {
             )}
 
             {/* Launch Configuration Area */}
-            {selectedExam && (
+            {(selectedExam || isRandomMode) && (
               <section id="practice-config-section" className="glass rounded-3xl border border-black p-6 space-y-6 relative overflow-hidden bg-black/[0.01]">
                 <div className="absolute inset-0 border border-white/60 rounded-3xl pointer-events-none" />
                 
                 <div className="relative z-10 flex items-start justify-between border-b border-black/10 pb-3">
                   <div>
                     <h3 className="text-xs font-black text-black uppercase tracking-widest">연습 세션 설정</h3>
-                    <p className="text-sm font-black text-black mt-1">
-                      선택된 기출: <span className="underline">{selectedExam.title}</span>
-                    </p>
-                    <p className="text-[10px] text-black/50 mt-0.5">
-                      환자 정보: {selectedExam.caseSpec.patient.name} ({selectedExam.caseSpec.patient.age}세/{selectedExam.caseSpec.patient.gender}) · {selectedExam.caseSpec.patient.occupation}
-                    </p>
+                    {isRandomMode ? (
+                      <>
+                        <p className="text-sm font-black text-black mt-1">
+                          선택된 기출: <span className="underline">필터 범위 내 무작위 기출 (총 {filteredExams.length}개 대상)</span>
+                        </p>
+                        <p className="text-[10px] text-black/50 mt-0.5">
+                          환자 정보: 진료 시작 시 비공개로 선택됩니다.
+                        </p>
+                      </>
+                    ) : selectedExam ? (
+                      <>
+                        <p className="text-sm font-black text-black mt-1">
+                          선택된 기출: <span className="underline">{selectedExam.title}</span>
+                        </p>
+                        <p className="text-[10px] text-black/50 mt-0.5">
+                          환자 정보: {selectedExam.caseSpec.patient.name} ({selectedExam.caseSpec.patient.age}세/{selectedExam.caseSpec.patient.gender}) · {selectedExam.caseSpec.patient.occupation}
+                        </p>
+                      </>
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setShowPreview((prev) => !prev)}
-                      className="text-[10px] font-bold text-black border border-black rounded-full px-3 py-1 bg-white hover:bg-neutral-50"
-                    >
-                      {showPreview ? '기출 세부 내용 닫기' : '기출 세부 내용 보기'}
-                    </button>
+                    {!isRandomMode && selectedExam && (
+                      <button
+                        onClick={() => setShowPreview((prev) => !prev)}
+                        className="text-[10px] font-bold text-black border border-black rounded-full px-3 py-1 bg-white hover:bg-neutral-50"
+                      >
+                        {showPreview ? '기출 세부 내용 닫기' : '기출 세부 내용 보기'}
+                      </button>
+                    )}
                     <button
                       onClick={() => {
                         setSelectedExam(null);
+                        setIsRandomMode(false);
                         setShowPreview(false);
                       }}
-                      className="text-[10px] font-bold text-black/50 hover:text-black border border-black/20 rounded-full px-2.5 py-1"
+                      className="text-[10px] font-bold text-black/50 hover:text-black border border-black/20 rounded-full px-2.5 py-1 cursor-pointer"
                     >
                       선택 취소
                     </button>
@@ -1378,7 +1405,7 @@ function PastExamsContent() {
                 </div>
 
                 {/* Read-Only Details Panel */}
-                {showPreview && (
+                {!isRandomMode && selectedExam && showPreview && (
                   <div className="border border-black/25 rounded-2xl p-4 bg-white/70 space-y-4 max-h-[40vh] overflow-y-auto relative z-10 text-xs text-black/85 leading-relaxed">
                     <div className="border-b border-black/10 pb-2">
                       <p className="text-[10px] font-black uppercase tracking-wider text-black/50">기본 정보</p>
@@ -1557,29 +1584,39 @@ function PastExamsContent() {
 
                 <div className="pt-4 relative z-10">
                   <button
-                    onClick={() => void handleStartExam(selectedExam)}
-                    disabled={submitting}
-                    className="w-full py-4.5 bg-black text-white rounded-2xl text-xs font-bold uppercase tracking-wider hover:bg-black/90 active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg"
+                    onClick={() => {
+                      if (isRandomMode) {
+                        void handleStartRandomExam();
+                      } else if (selectedExam) {
+                        void handleStartExam(selectedExam);
+                      }
+                    }}
+                    disabled={submitting || (isRandomMode && filteredExams.length === 0)}
+                    className="w-full py-4.5 bg-black text-white rounded-2xl text-xs font-bold uppercase tracking-wider hover:bg-black/90 active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg cursor-pointer"
                   >
                     {submitting ? (
                       <>
                         <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                         시험 세션 생성 중...
                       </>
-                    ) : '이 기출 조건으로 연습 시작'}
+                    ) : isRandomMode ? '무작위 기출 연습 시작' : '이 기출 조건으로 연습 시작'}
                   </button>
                 </div>
               </section>
             )}
 
             {/* Quick Random launch triggers */}
-            {!selectedExam && filteredExams.length > 0 && (
+            {!selectedExam && !isRandomMode && filteredExams.length > 0 && (
               <div className="flex justify-end pt-2">
                 <button
-                  onClick={() => void handleStartRandomExam()}
-                  className="px-6 py-3 rounded-full bg-neutral-900 text-white text-xs font-bold hover:bg-neutral-800 active:scale-[0.97] transition-all flex items-center gap-2"
+                  onClick={() => {
+                    setIsRandomMode(true);
+                    setSelectedExam(null);
+                    setViewingExam(null);
+                  }}
+                  className="px-6 py-3 rounded-full bg-neutral-900 text-white text-xs font-bold hover:bg-neutral-800 active:scale-[0.97] transition-all flex items-center gap-2 cursor-pointer"
                 >
-                  🎲 현재 필터 조건 기출 중 하나 무작위 시작
+                  🎲 현재 필터 조건 기출 중 하나 무작위 시작 (설정 후 시작)
                 </button>
               </div>
             )}
