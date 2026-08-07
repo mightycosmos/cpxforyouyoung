@@ -1,0 +1,470 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { v4 as uuidv4 } from 'uuid';
+import { useSessionStore } from '@/store/sessionStore';
+import { CLINICAL_CATEGORIES, CLINICAL_PRESENTATIONS } from '@/lib/ai/personaTemplate';
+import { CaseSpec, Difficulty, Friendliness, TimerMode } from '@/types';
+import type { DirectCasePersisted } from '@/types/directCase';
+import { useAuth } from '@/components/auth/AuthProvider';
+
+type PracticeMode = 'full_random' | 'category_random' | 'clinical_pick';
+type CustomPoolMode = 'full_random' | 'category_random' | 'clinical_pick';
+
+export default function PracticePage() {
+  const router = useRouter();
+  const { startSession, directCases, removeDirectCase } = useSessionStore();
+  const { user, authLoading } = useAuth();
+  const [activeTab, setActiveTab] = useState<'generative' | 'past-exam'>('generative');
+  const [loading, setLoading] = useState(false);
+  const [mode, setMode] = useState<PracticeMode>('full_random');
+  const [category, setCategory] = useState<string>(Object.keys(CLINICAL_CATEGORIES)[0] || '');
+  const [presentation, setPresentation] = useState<string>(CLINICAL_PRESENTATIONS[0] || '');
+  const [difficulty, setDifficulty] = useState<Difficulty>('normal');
+  const [friendliness, setFriendliness] = useState<Friendliness>('normal');
+  const [timerMode, setTimerMode] = useState<TimerMode>('countdown');
+  const [interactionMode, setInteractionMode] = useState<'voice' | 'text'>('voice');
+  const [customMode, setCustomMode] = useState<CustomPoolMode>('full_random');
+  const [customCategory, setCustomCategory] = useState<string>(Object.keys(CLINICAL_CATEGORIES)[0] || '');
+  const [customPresentation, setCustomPresentation] = useState<string>(CLINICAL_PRESENTATIONS[0] || '');
+  const [customDifficulty, setCustomDifficulty] = useState<Difficulty>('normal');
+  const [customFriendliness, setCustomFriendliness] = useState<Friendliness>('normal');
+  const [customTimerMode, setCustomTimerMode] = useState<TimerMode>('countdown');
+  const [customInteractionMode, setCustomInteractionMode] = useState<'voice' | 'text'>('voice');
+
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.replace('/');
+    }
+  }, [authLoading, user, router]);
+
+  const handleStartSession = async () => {
+    setLoading(true);
+    try {
+      let selectedClinical = presentation;
+      let selectedDifficulty: Difficulty = difficulty;
+
+      if (mode === 'full_random') {
+        selectedClinical = CLINICAL_PRESENTATIONS[Math.floor(Math.random() * CLINICAL_PRESENTATIONS.length)];
+        const ds: Difficulty[] = ['easy', 'normal', 'hard'];
+        selectedDifficulty = ds[Math.floor(Math.random() * ds.length)];
+      }
+
+      if (mode === 'category_random') {
+        const pool = category ? CLINICAL_CATEGORIES[category] || [] : [];
+        const source = pool.length > 0 ? pool : CLINICAL_PRESENTATIONS;
+        selectedClinical = source[Math.floor(Math.random() * source.length)];
+      }
+
+      if (!selectedClinical) {
+        selectedClinical = CLINICAL_PRESENTATIONS[Math.floor(Math.random() * CLINICAL_PRESENTATIONS.length)];
+      }
+
+      const res = await fetch('/api/case/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clinical_presentation: selectedClinical,
+          difficulty: selectedDifficulty,
+          friendliness,
+          learning_goal: ['감별진단 확장', 'PPI 강화'],
+          persona_template_id: 'default_v1',
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { error?: string }).error || '케이스 생성 API 호출 실패');
+      }
+      const data = await res.json();
+      const caseSpec: CaseSpec = data.caseSpec;
+      const sessionId = uuidv4();
+
+      const reg = await fetch('/api/session/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, caseSpec, difficulty: selectedDifficulty, friendliness }),
+      });
+      if (!reg.ok) {
+        const err = await reg.json().catch(() => ({}));
+        throw new Error((err as { error?: string }).error || '서버 세션 등록 실패');
+      }
+
+      startSession(caseSpec, sessionId, selectedDifficulty, timerMode);
+      router.push(interactionMode === 'voice' ? `/session/${sessionId}` : `/session-message/${sessionId}`);
+    } catch (error) {
+      console.error('Failed to start session:', error);
+      alert('케이스 생성에 실패했습니다. 다시 시도해주세요.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const categoryPool = category ? CLINICAL_CATEGORIES[category] || [] : [];
+
+  const customPresentationOptions = useMemo(() => {
+    const set = new Set<string>(CLINICAL_PRESENTATIONS);
+    for (const d of directCases ?? []) {
+      if (d.chiefComplaint?.trim()) set.add(d.chiefComplaint.trim());
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'ko'));
+  }, [directCases]);
+
+  useEffect(() => {
+    if (customPresentationOptions.length === 0) return;
+    if (!customPresentationOptions.includes(customPresentation)) {
+      setCustomPresentation(customPresentationOptions[0]!);
+    }
+  }, [customPresentationOptions, customPresentation]);
+
+  const customCategoryPool = customCategory ? CLINICAL_CATEGORIES[customCategory] || [] : [];
+
+  const filteredDirectCases = useMemo(() => {
+    const all = directCases ?? [];
+    if (customMode === 'full_random') return all;
+    if (customMode === 'category_random') {
+      return all.filter((d) => d.systemCategory === customCategory);
+    }
+    return all.filter((d) => d.chiefComplaint === customPresentation);
+  }, [directCases, customMode, customCategory, customPresentation]);
+
+  const handleStartDirectSaved = async (entry: DirectCasePersisted) => {
+    setLoading(true);
+    try {
+      const caseSpec = entry.caseSpec;
+      const sessionId = uuidv4();
+      const useFilterModes = customMode === 'category_random' || customMode === 'clinical_pick';
+      const resolvedDifficulty = useFilterModes ? customDifficulty : caseSpec.difficulty;
+      const resolvedFriendliness = useFilterModes
+        ? customFriendliness
+        : entry.formPayload?.friendliness ?? 'normal';
+      const reg = await fetch('/api/session/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          caseSpec,
+          difficulty: resolvedDifficulty,
+          friendliness: resolvedFriendliness,
+        }),
+      });
+      if (!reg.ok) {
+        const err = await reg.json().catch(() => ({}));
+        throw new Error((err as { error?: string }).error || '세션 등록 실패');
+      }
+      startSession(caseSpec, sessionId, resolvedDifficulty, customTimerMode);
+      router.push(customInteractionMode === 'voice' ? `/session/${sessionId}` : `/session-message/${sessionId}`);
+    } catch (e) {
+      console.error(e);
+      alert('시작에 실패했습니다.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCustomRandomStart = async () => {
+    const pool = filteredDirectCases;
+    if (pool.length === 0) return;
+    const picked = pool[Math.floor(Math.random() * pool.length)];
+    await handleStartDirectSaved(picked);
+  };
+
+  if (!authLoading && !user) return null;
+
+  return (
+    <main className="min-h-screen bg-white relative flex flex-col font-sans selection:bg-black selection:text-white">
+      {/* Background Grid Pattern */}
+      <div className="fixed inset-0 z-0 pointer-events-none" 
+           style={{ 
+             backgroundImage: "linear-gradient(rgba(0,0,0,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.06) 1px, transparent 1px)", 
+             backgroundSize: "64px 64px" 
+           }} 
+      />
+      
+      {/* Soft gradient blobs for the liquid glass effect */}
+      <div className="fixed top-10 right-[15%] w-96 h-96 rounded-full bg-neutral-200 blur-[100px] opacity-70 pointer-events-none z-0" />
+      <div className="fixed bottom-10 left-[15%] w-96 h-96 rounded-full bg-neutral-300 blur-[100px] opacity-60 pointer-events-none z-0" />
+
+      <div className="relative z-10 flex-1 flex flex-col h-full border-x border-black max-w-6xl mx-auto w-full bg-transparent">
+        <header className="border-b border-black bg-white/70 backdrop-blur-xl px-8 py-5 sticky top-0 z-50">
+          <div className="flex items-center justify-between">
+            <button onClick={() => router.push('/')} className="text-sm font-bold uppercase tracking-wider text-black/60 hover:text-black transition-colors flex items-center gap-2">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+              홈으로
+            </button>
+            <h1 className="text-sm font-black tracking-widest uppercase">Practice Setup</h1>
+            <div className="w-16" />
+          </div>
+        </header>
+
+        <div className="flex-1 p-6 w-full max-w-4xl mx-auto space-y-8 mt-6">
+          {/* Main Mode Selector Tabs */}
+          <div className="relative z-10 grid grid-cols-2 gap-2 border border-black rounded-2xl p-1 bg-white/40 backdrop-blur-md">
+            {[
+              { id: 'generative' as const, label: 'AI 생성 모드', desc: 'Generative Mode' },
+              { id: 'past-exam' as const, label: '기출 모드', desc: 'Past Exam Mode' },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`text-center py-3.5 rounded-xl transition-all duration-300 ${
+                  activeTab === tab.id
+                    ? 'bg-black text-white shadow-md'
+                    : 'text-black/60 hover:text-black hover:bg-white/40'
+                }`}
+              >
+                <p className="text-xs font-black tracking-wider uppercase">{tab.label}</p>
+                <p className={`text-[9px] font-semibold opacity-60 mt-0.5`}>{tab.desc}</p>
+              </button>
+            ))}
+          </div>
+
+          {activeTab === 'generative' && (
+            <>
+              <div className="relative z-10 flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-sm font-black uppercase tracking-widest text-black">Generative Mode</h2>
+                  <p className="text-xs text-black/55 mt-1 max-w-md">
+                    AI가 임상 프롬프트로 새 증례를 생성합니다.
+                  </p>
+                </div>
+              </div>
+
+              <section className="grid md:grid-cols-3 gap-4">
+                {[
+                  { key: 'full_random', title: '완전 랜덤', desc: '임상 + 난이도 모두 랜덤' },
+                  { key: 'category_random', title: '카테고리 랜덤', desc: '카테고리 안에서 임상 랜덤' },
+                  { key: 'clinical_pick', title: '임상 선택', desc: '원하는 임상을 직접 선택' },
+                ].map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setMode(item.key as PracticeMode)}
+                    className={`relative text-left rounded-3xl border transition-all duration-300 p-6 flex flex-col justify-center
+                      ${mode === item.key 
+                        ? 'border-black bg-black/5 backdrop-blur-xl shadow-[0_10px_30px_-10px_rgba(0,0,0,0.1)] -translate-y-1' 
+                        : 'border-black/20 bg-white/40 hover:bg-white/70 hover:border-black/50 backdrop-blur-md'
+                      }`}
+                  >
+                    {mode === item.key && (
+                      <div className="absolute top-4 right-4 w-2 h-2 rounded-full bg-black"></div>
+                    )}
+                    <p className="text-xl font-black text-black mb-2 uppercase tracking-tight">{item.title}</p>
+                    <p className="text-xs font-semibold text-black/60 leading-relaxed">{item.desc}</p>
+                  </button>
+                ))}
+              </section>
+
+              <section className="rounded-3xl border border-black glass p-8 space-y-8 relative overflow-hidden">
+                <div className="absolute inset-0 border border-white/60 rounded-3xl pointer-events-none"></div>
+
+                {mode === 'category_random' && (
+                  <div className="relative z-10">
+                    <label className="text-xs font-black text-black uppercase tracking-widest mb-3 block">카테고리</label>
+                    <select
+                      value={category}
+                      onChange={(e) => setCategory(e.target.value)}
+                      className="w-full rounded-2xl border border-black px-4 py-3.5 text-sm font-medium bg-white/50 backdrop-blur-md outline-none focus:bg-white focus:ring-2 focus:ring-black/5 transition-all text-black appearance-none"
+                    >
+                      {Object.keys(CLINICAL_CATEGORIES).map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                    <p className="text-xs font-medium text-black/50 mt-3 leading-relaxed">
+                      포함 임상: {categoryPool.length > 0 ? categoryPool.join(', ') : '해당 없음'}
+                    </p>
+                  </div>
+                )}
+
+                {mode === 'clinical_pick' && (
+                  <div className="relative z-10">
+                    <label className="text-xs font-black text-black uppercase tracking-widest mb-3 block">임상 선택</label>
+                    <select
+                      value={presentation}
+                      onChange={(e) => setPresentation(e.target.value)}
+                      className="w-full rounded-2xl border border-black px-4 py-3.5 text-sm font-medium bg-white/50 backdrop-blur-md outline-none focus:bg-white focus:ring-2 focus:ring-black/5 transition-all text-black appearance-none"
+                    >
+                      {CLINICAL_PRESENTATIONS.map((item) => (
+                        <option key={item} value={item}>{item}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {mode !== 'full_random' && (
+                  <div className="space-y-8 relative z-10">
+                    <div className="pt-6 border-t border-black/10">
+                      <label className="text-xs font-black text-black uppercase tracking-widest mb-3 block">난이도</label>
+                      <div className="grid grid-cols-3 gap-3">
+                        {[
+                          { value: 'easy', label: '쉬움' },
+                          { value: 'normal', label: '보통' },
+                          { value: 'hard', label: '어려움' },
+                        ].map((d) => (
+                          <button
+                            key={d.value}
+                            onClick={() => setDifficulty(d.value as Difficulty)}
+                            className={`rounded-2xl py-3 text-sm font-bold border transition-all ${
+                              difficulty === d.value 
+                              ? 'bg-black text-white border-black shadow-md' 
+                              : 'bg-white/50 text-black/70 border-black/20 hover:border-black/50 hover:bg-white/80'
+                            }`}
+                          >
+                            {d.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-black text-black uppercase tracking-widest mb-3 block">환자 태도</label>
+                      <div className="grid grid-cols-3 gap-3">
+                        {[
+                          { value: 'cooperative', label: '협조적' },
+                          { value: 'normal', label: '보통' },
+                          { value: 'uncooperative', label: '비협조적' },
+                        ].map((f) => (
+                          <button
+                            key={f.value}
+                            onClick={() => setFriendliness(f.value as Friendliness)}
+                            className={`rounded-2xl py-3 text-sm font-bold border transition-all ${
+                              friendliness === f.value 
+                              ? 'bg-black text-white border-black shadow-md' 
+                              : 'bg-white/50 text-black/70 border-black/20 hover:border-black/50 hover:bg-white/80'
+                            }`}
+                          >
+                            {f.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="relative z-10 pt-2 border-t border-black/10">
+                  <label className="text-xs font-black text-black uppercase tracking-widest mb-3 block">진행 방식</label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+                    <button
+                      type="button"
+                      onClick={() => setInteractionMode('voice')}
+                      className={`text-left rounded-2xl border p-4 transition-all ${
+                        interactionMode === 'voice'
+                          ? 'border-black bg-black text-white shadow-md'
+                          : 'border-black/20 bg-white/50 hover:border-black/40'
+                      }`}
+                    >
+                      <p className="text-sm font-black mb-1">음성 세션</p>
+                      <p className={`text-xs font-medium leading-relaxed ${interactionMode === 'voice' ? 'text-white/80' : 'text-black/50'}`}>
+                        마이크를 눌러 환자와 음성으로 대화합니다.
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInteractionMode('text')}
+                      className={`text-left rounded-2xl border p-4 transition-all ${
+                        interactionMode === 'text'
+                          ? 'border-black bg-black text-white shadow-md'
+                          : 'border-black/20 bg-white/50 hover:border-black/40'
+                      }`}
+                    >
+                      <p className="text-sm font-black mb-1">메시지 세션</p>
+                      <p className={`text-xs font-medium leading-relaxed ${interactionMode === 'text' ? 'text-white/80' : 'text-black/50'}`}>
+                        채팅창에 텍스트를 입력해 환자와 대화합니다.
+                      </p>
+                    </button>
+                  </div>
+
+                  <label className="text-xs font-black text-black uppercase tracking-widest mb-3 block">타이머 방식</label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setTimerMode('countdown')}
+                      className={`text-left rounded-2xl border p-4 transition-all ${
+                        timerMode === 'countdown'
+                          ? 'border-black bg-black text-white shadow-md'
+                          : 'border-black/20 bg-white/50 hover:border-black/40'
+                      }`}
+                    >
+                      <p className="text-sm font-black mb-1">카운트다운 (12분)</p>
+                      <p className={`text-xs font-medium leading-relaxed ${timerMode === 'countdown' ? 'text-white/80' : 'text-black/50'}`}>
+                        12:00부터 줄어들며, 0이 되면 자동 종료됩니다.
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTimerMode('countup')}
+                      className={`text-left rounded-2xl border p-4 transition-all ${
+                        timerMode === 'countup'
+                          ? 'border-black bg-black text-white shadow-md'
+                          : 'border-black/20 bg-white/50 hover:border-black/40'
+                      }`}
+                    >
+                      <p className="text-sm font-black mb-1">카운트업 (무제한)</p>
+                      <p className={`text-xs font-medium leading-relaxed ${timerMode === 'countup' ? 'text-white/80' : 'text-black/50'}`}>
+                        0:00부터 올라가며, 시간 제한 없이 진행합니다.
+                      </p>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="pt-4 relative z-10">
+                  <button
+                    onClick={handleStartSession}
+                    disabled={loading}
+                    className="w-full py-5 bg-black text-white rounded-2xl text-sm font-bold uppercase tracking-wider hover:bg-black/90 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-xl flex items-center justify-center"
+                  >
+                    {loading ? (
+                      <>
+                        <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin mr-3" />
+                        케이스 생성 중...
+                      </>
+                    ) : '이 설정으로 시작'}
+                  </button>
+                </div>
+              </section>
+            </>
+          )}
+
+
+
+          {activeTab === 'past-exam' && (
+            <section className="rounded-3xl border border-black glass p-8 space-y-6 relative overflow-hidden">
+              <div className="absolute inset-0 border border-white/60 rounded-3xl pointer-events-none" />
+              <div className="relative z-10 space-y-4">
+                <div>
+                  <h2 className="text-sm font-black uppercase tracking-widest text-black">Past Exam Mode</h2>
+                  <p className="text-xs text-black/55 mt-1 max-w-md leading-relaxed">
+                    실제 출제되었던 기출 증례의 스크린샷을 업로드하여 AI로 증례를 자동 복원하고, 공유 문제 은행을 통해 다른 학생들과 함께 연습할 수 있습니다.
+                  </p>
+                </div>
+                
+                <div className="border border-black/10 rounded-2xl bg-white/40 p-5 space-y-3">
+                  <h3 className="text-xs font-bold text-black uppercase tracking-wider">주요 기능</h3>
+                  <ul className="text-xs text-black/70 space-y-2 list-disc pl-4 leading-relaxed">
+                    <li><strong>스크린샷 인식</strong>: 시험 화면 캡처본을 업로드하면 AI가 환자 정보, 문진 항목, 신체진찰 소견을 자동 파싱합니다.</li>
+                    <li><strong>공유 문제 은행</strong>: 집단 지성으로 구축되는 문제 은행에서 원하는 기출을 선택해 즉시 모의시험을 시작할 수 있습니다.</li>
+                    <li><strong>즐겨찾기</strong>: 자주 연습할 기출 문항을 따로 북마크하여 모어볼 수 있습니다.</li>
+                  </ul>
+                </div>
+
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => router.push('/practice/past-exams')}
+                    className="w-full py-5 bg-black text-white rounded-2xl text-sm font-bold uppercase tracking-wider hover:bg-black/90 active:scale-[0.98] transition-all shadow-xl flex items-center justify-center gap-2"
+                  >
+                    <span>기출 문제 은행 열기</span>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M5 12h14M12 5l7 7-7 7"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </section>
+          )}
+        </div>
+      </div>
+    </main>
+  );
+}
