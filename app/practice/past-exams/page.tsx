@@ -1257,12 +1257,11 @@ function PastExamsContent() {
                       alert('매칭되는 기출 증례가 없습니다.');
                       return;
                     }
-                    // Select first matching one as a preview, or launch directly
-                    const randomPicked = filteredExams[Math.floor(Math.random() * filteredExams.length)];
-                    setSelectedExam(randomPicked);
-                    // Scroll down to configuration if mobile
+                    setIsRandomMode(true);
+                    setSelectedExam(null);
+                    setViewingExam(null);
                   }}
-                  className="w-full py-2.5 rounded-full bg-black text-white text-xs font-bold hover:bg-black/90 transition-all active:scale-[0.98]"
+                  className="w-full py-2.5 rounded-full bg-black text-white text-xs font-bold hover:bg-black/90 transition-all active:scale-[0.98] cursor-pointer"
                 >
                   랜덤 기출 선택하기
                 </button>
