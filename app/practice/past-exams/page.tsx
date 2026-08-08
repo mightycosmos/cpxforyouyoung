@@ -1604,21 +1604,7 @@ function PastExamsContent() {
               </section>
             )}
 
-            {/* Quick Random launch triggers */}
-            {!selectedExam && !isRandomMode && filteredExams.length > 0 && (
-              <div className="flex justify-end pt-2">
-                <button
-                  onClick={() => {
-                    setIsRandomMode(true);
-                    setSelectedExam(null);
-                    setViewingExam(null);
-                  }}
-                  className="px-6 py-3 rounded-full bg-neutral-900 text-white text-xs font-bold hover:bg-neutral-800 active:scale-[0.97] transition-all flex items-center gap-2 cursor-pointer"
-                >
-                  🎲 현재 필터 조건 기출 중 하나 무작위 시작 (설정 후 시작)
-                </button>
-              </div>
-            )}
+
 
           </main>
         </div>
